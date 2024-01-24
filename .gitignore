@@ -1,3 +1,5 @@
+sync.sh
+
 # Ignore compiled code
 dist
 
