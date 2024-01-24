@@ -1,21 +1,32 @@
 #include <ESP8266WiFi.h>
 #include <IRremote.hpp>
 
-#include "IR_defines.h"
+#include "ir_defines.h"
 #include "secret_defines.h"
-
-#define LED_ON LOW
-#define LED_OFF HIGH
 
 // Heartbeat setup
 #define HEARTBEAT_PERIOD 500
 int heartbeatStatus = 1;
 unsigned long heartbeatLast = 0;
 
+// Local homebridge address
+#define HOMEBRIDGE "homebridge.local"
+
+// Button control pins
+#define ON_BUTTON_PIN 14
+#define OFF_BUTTON_PIN 12
+
+// ESP8266 on-board LED is pull down
+#define LED_ON LOW
+#define LED_OFF HIGH
+
 // Wifi setup
 WiFiServer server(80);
 
+String accessoryId;
+
 void setup() {
+  // Setup serial connection
   Serial.begin(74880);
   Serial.println("init");
 
@@ -27,6 +38,10 @@ void setup() {
   // Start wifi and IR
   wifiConnect();
   IrSender.begin(IR_TX_PIN);
+
+  // Get accessory ID
+  // TODO should this fail, we should implement some sort of retry
+  accessoryId = fetchAccessoryId();
 }
 
 void wifiConnect() {
@@ -47,11 +62,20 @@ void wifiConnect() {
   server.begin();
 }
 
+String fetchAccessoryId() {
+  // TODO I'm sure this string concat doesn't work
+  return fetchUrl(HOMEBRIDGE + "/id/" + WiFi.macAddress());
+}
+
 void loop() {
-  //tripleBlink();
   heartbeat();
-  checkWebServer();
   checkButtons();
+
+  // Pull strategy
+  fetchStatus();
+
+  // Push strategy
+  /* checkWebServer(); */
 }
 
 void heartbeat() {
@@ -65,7 +89,7 @@ void heartbeat() {
 }
 
 void checkButtons() {
-  if (onButtonPushed()) {
+  if (onButtonValue()) {
     Serial.println("On button");
     turnCandlesOn();
   }
@@ -76,7 +100,7 @@ void checkButtons() {
   }
 }
 
-bool onButtonPushed() {
+bool onButtonValue() {
   return !digitalRead(ON_BUTTON_PIN);
 }
 
@@ -84,8 +108,46 @@ bool offButtonPushed() {
   return !digitalRead(OFF_BUTTON_PIN);
 }
 
-void getStatus() {
-  
+void fetchStatus() {
+  // Pull status from homebridge
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+
+  // TODO I'm sure this string concat doesn't work
+  String data = fetchUrl(HOMEBRIDGE + "/status/" + accessoryId)
+
+  // Switch lights
+  if (data == "true") {
+    turnCandlesOn();
+  }
+  else {
+    turnCandlesOff();
+  }
+}
+
+String fetchUrl(String url) {
+  // TODO never run...got test it
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+
+  Serial.println("Requesting " + url);
+
+  if (https.begin(client, url)) {
+    int httpCode = https.GET();
+    Serial.println("============== Response code: " + String(httpCode));
+    if (httpCode > 0) {
+      String data = https.getString();
+      Serial.print("Current Status: ");
+      Serial.println(data);
+    }
+    https.end();
+  } else {
+    Serial.println("[HTTPS] Unable to connect");
+  }
+
+  return data
 }
 
 void checkWebServer() {
@@ -107,7 +169,7 @@ void checkWebServer() {
   if (req.indexOf(F("/on")) != -1) {
     turnCandlesOn();
     resp = "Candles On";
-  } 
+  }
   else if (req.indexOf(F("/off")) != -1) {
     turnCandlesOff();
     resp = "Candles Off";
@@ -130,9 +192,9 @@ void checkWebServer() {
 }
 
 void turnCandlesOn() {
-  IrSender.sendNEC(CANDLE_ADDRESS, CMD_ON, REPEATS);
+  IrSender.sendNEC(IR_ADDRESS, CANDLES_ON, REPEATS);
 }
 
 void turnCandlesOff() {
-  IrSender.sendNEC(CANDLE_ADDRESS, CMD_OFF, REPEATS);
+  IrSender.sendNEC(IR_ADDRESS, CANDLES_OFF, REPEATS);
 }
