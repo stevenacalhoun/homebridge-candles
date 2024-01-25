@@ -1,4 +1,8 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
+#include <ESP8266HTTPClient.h>
+
+#include <WiFiClient.h>
 #include <IRremote.hpp>
 
 #include "ir_defines.h"
@@ -10,7 +14,12 @@ int heartbeatStatus = 1;
 unsigned long heartbeatLast = 0;
 
 // Local homebridge address
-#define HOMEBRIDGE "homebridge.local"
+#define HOMEBRIDGE "http://homebridge.local:18081"
+//#define HOMEBRIDGE "http://10.0.0.27:18081"
+#define FETCH_PERIOD 3000
+unsigned long lastFetch = 0;
+
+int lastLightStatus = -1;
 
 // Button control pins
 #define ON_BUTTON_PIN 14
@@ -20,8 +29,12 @@ unsigned long heartbeatLast = 0;
 #define LED_ON LOW
 #define LED_OFF HIGH
 
-// Wifi setup
-WiFiServer server(80);
+// Wifi setup (pull)
+WiFiClient client;
+ESP8266WiFiMulti WiFiMulti;
+
+// WiFi setup (push)
+//WiFiServer server(80);
 
 String accessoryId;
 
@@ -36,16 +49,17 @@ void setup() {
   pinMode(OFF_BUTTON_PIN, INPUT_PULLUP);
 
   // Start wifi and IR
-  wifiConnect();
-  IrSender.begin(IR_TX_PIN);
+  WiFi.hostname("ESP-host");
+  WiFi.mode(WIFI_STA);
+  WiFiMulti.addAP(SECRET_SSID, SECRET_PSWD);
+  //client.setInsecure();
+  // startServer();
 
-  // Get accessory ID
-  // TODO should this fail, we should implement some sort of retry
-  accessoryId = fetchAccessoryId();
+  IrSender.begin(IR_TX_PIN);
 }
 
-void wifiConnect() {
-  WiFi.mode(WIFI_STA);
+/*
+void startServer() {
   WiFi.begin(SECRET_SSID, SECRET_PSWD);
 
   Serial.print("Connecting");
@@ -61,10 +75,13 @@ void wifiConnect() {
   Serial.println(WiFi.macAddress());
   server.begin();
 }
+*/
 
 String fetchAccessoryId() {
-  // TODO I'm sure this string concat doesn't work
-  return fetchUrl(HOMEBRIDGE + "/id/" + WiFi.macAddress());
+  String url = HOMEBRIDGE;
+  url += "/id/";
+  url += WiFi.macAddress();
+  return fetchUrl(url);
 }
 
 void loop() {
@@ -109,47 +126,85 @@ bool offButtonPushed() {
 }
 
 void fetchStatus() {
-  // Pull status from homebridge
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient https;
+  // TODO 
+  // If buttons are pushed, they change the light, but do not communicate upwards this new stats
+  // So every pull period, lights will get reset to whatever homebridge knows
 
-  // TODO I'm sure this string concat doesn't work
-  String data = fetchUrl(HOMEBRIDGE + "/status/" + accessoryId)
+  // Only fetch if it is time to do so
+  unsigned long currentTime = millis();
+  signed long timeDiff = currentTime - lastFetch;
+  if (abs(timeDiff) < FETCH_PERIOD) { return; }
+
+  //  If ID has not been set, fetch it
+  if (accessoryId == "") { accessoryId = fetchAccessoryId(); }
+
+  // If it still hasn't been set, don't fetch status
+  if (accessoryId == "") { return; }
+
+  // Fetch status url
+  String url = HOMEBRIDGE;
+  url += "/status/";
+  url += accessoryId;
+  String data = fetchUrl(url);
 
   // Switch lights
+  int lightStatus;
   if (data == "true") {
-    turnCandlesOn();
+    lightStatus = 1;
+  }
+  else if (data == "false") {
+    lightStatus = 0;
   }
   else {
-    turnCandlesOff();
+    Serial.println("Unexpected data: '" + data + "'");
   }
+
+  // If we have a new status, change the lights
+  if (lightStatus != lastLightStatus) {
+    if (lightStatus) {
+      turnCandlesOn();
+    }
+    else {
+      turnCandlesOff();
+    }
+  }
+  Serial.println();
+
+  lastFetch = currentTime;
 }
 
 String fetchUrl(String url) {
-  // TODO never run...got test it
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient https;
+  Serial.println("GET " + url);
+  String data = "";
 
-  Serial.println("Requesting " + url);
+  if ((WiFiMulti.run() == WL_CONNECTED)) {
+    HTTPClient http;
 
-  if (https.begin(client, url)) {
-    int httpCode = https.GET();
-    Serial.println("============== Response code: " + String(httpCode));
-    if (httpCode > 0) {
-      String data = https.getString();
-      Serial.print("Current Status: ");
-      Serial.println(data);
+    if (http.begin(client, url)) {
+      int httpCode = http.GET();
+      if (httpCode > 0) {
+        data = http.getString();
+        Serial.print("Response: ");
+        Serial.println(data);
+      } 
+      else {
+        Serial.println("Response code: " + String(httpCode));
+        Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+      }
+      http.end();
+    } 
+    else {
+      Serial.println("[HTTP] Unable to connect");
     }
-    https.end();
-  } else {
-    Serial.println("[HTTPS] Unable to connect");
+  }
+  else {
+    Serial.println("WiFi multi never got connected");
   }
 
-  return data
+  return data;
 }
 
+/*
 void checkWebServer() {
   // Check if a client has connected
   WiFiClient client = server.accept();
@@ -190,11 +245,16 @@ void checkWebServer() {
   client.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"));
   client.print(resp);
 }
+*/
 
 void turnCandlesOn() {
+  Serial.println("Turning on");
+  lastLightStatus = 1;
   IrSender.sendNEC(IR_ADDRESS, CANDLES_ON, REPEATS);
 }
 
 void turnCandlesOff() {
+  Serial.println("Turning off");
+  lastLightStatus = 0;
   IrSender.sendNEC(IR_ADDRESS, CANDLES_OFF, REPEATS);
 }
