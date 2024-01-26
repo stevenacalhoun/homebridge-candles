@@ -5,8 +5,11 @@
 #include <WiFiClient.h>
 #include <IRremote.hpp>
 
-#include "ir_defines.h"
+#include "ir_candle_defines.h"
 #include "secret_defines.h"
+
+// Pin Settings
+#define IR_TX_PIN 13
 
 // Heartbeat setup
 #define HEARTBEAT_PERIOD 500
@@ -15,11 +18,11 @@ unsigned long heartbeatLast = 0;
 
 // Local homebridge address
 #define HOMEBRIDGE "http://homebridge.local:18081"
-//#define HOMEBRIDGE "http://10.0.0.27:18081"
 #define FETCH_PERIOD 3000
-unsigned long lastFetch = 0;
-
-int lastLightStatus = -1;
+String accessoryId;
+int currentLightStatus = -1;
+unsigned long lastLightFetchTime = 0;
+unsigned long lastLightChangeTime = 0;
 
 // Button control pins
 #define ON_BUTTON_PIN 14
@@ -35,8 +38,6 @@ ESP8266WiFiMulti WiFiMulti;
 
 // WiFi setup (push)
 //WiFiServer server(80);
-
-String accessoryId;
 
 void setup() {
   // Setup serial connection
@@ -58,25 +59,6 @@ void setup() {
   IrSender.begin(IR_TX_PIN);
 }
 
-/*
-void startServer() {
-  WiFi.begin(SECRET_SSID, SECRET_PSWD);
-
-  Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  Serial.print("Connected, IP address: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Mac address: ");
-  Serial.println(WiFi.macAddress());
-  server.begin();
-}
-*/
-
 String fetchAccessoryId() {
   String url = HOMEBRIDGE;
   url += "/id/";
@@ -89,7 +71,7 @@ void loop() {
   checkButtons();
 
   // Pull strategy
-  fetchStatus();
+  fetchStatus();  
 
   // Push strategy
   /* checkWebServer(); */
@@ -99,40 +81,16 @@ void heartbeat() {
   unsigned long currentTime = millis();
   signed long timeDiff = currentTime - heartbeatLast;
   if (abs(timeDiff) > HEARTBEAT_PERIOD) {
-    heartbeatLast = millis();
+    heartbeatLast = currentTime;
     heartbeatStatus = !heartbeatStatus;
     digitalWrite(LED_BUILTIN, heartbeatStatus);
   }
 }
 
-void checkButtons() {
-  if (onButtonValue()) {
-    Serial.println("On button");
-    turnCandlesOn();
-  }
-
-  if (offButtonPushed()) {
-    Serial.println("Off button");
-    turnCandlesOff();
-  }
-}
-
-bool onButtonValue() {
-  return !digitalRead(ON_BUTTON_PIN);
-}
-
-bool offButtonPushed() {
-  return !digitalRead(OFF_BUTTON_PIN);
-}
-
 void fetchStatus() {
-  // TODO 
-  // If buttons are pushed, they change the light, but do not communicate upwards this new stats
-  // So every pull period, lights will get reset to whatever homebridge knows
-
   // Only fetch if it is time to do so
   unsigned long currentTime = millis();
-  signed long timeDiff = currentTime - lastFetch;
+  signed long timeDiff = currentTime - lastLightFetchTime;
   if (abs(timeDiff) < FETCH_PERIOD) { return; }
 
   //  If ID has not been set, fetch it
@@ -145,32 +103,25 @@ void fetchStatus() {
   String url = HOMEBRIDGE;
   url += "/status/";
   url += accessoryId;
+  url += "?currentLightStatus=";
+  url += currentLightStatus ? "true" : "false";
+  url += "&lastLightChangeTime=";
+  url += lastLightChangeTime;
+  url += "";
   String data = fetchUrl(url);
 
-  // Switch lights
-  int lightStatus;
-  if (data == "true") {
-    lightStatus = 1;
-  }
-  else if (data == "false") {
-    lightStatus = 0;
-  }
-  else {
-    Serial.println("Unexpected data: '" + data + "'");
-  }
+  // Parse response data
+  int newStatus = (data == "true") ? 1 : 0;
 
   // If we have a new status, change the lights
-  if (lightStatus != lastLightStatus) {
-    if (lightStatus) {
-      turnCandlesOn();
-    }
-    else {
-      turnCandlesOff();
-    }
+  if (newStatus != currentLightStatus) {
+    currentLightStatus = newStatus;
+    currentLightStatus ? turnOn() : turnOff();
+    lastLightChangeTime = currentTime;
   }
   Serial.println();
 
-  lastFetch = currentTime;
+  lastLightFetchTime = currentTime;
 }
 
 String fetchUrl(String url) {
@@ -204,7 +155,58 @@ String fetchUrl(String url) {
   return data;
 }
 
+void turnOn() {
+  Serial.println("Turning on");
+  IrSender.sendNEC(IR_ADDRESS, LIGHT_ON, REPEATS);
+}
+
+void turnOff() {
+  Serial.println("Turning off");
+  IrSender.sendNEC(IR_ADDRESS, LIGHT_OFF, REPEATS);
+}
+
+void checkButtons() {
+  if (onButtonValue()) {
+    Serial.println("On button");
+    turnOn();
+    currentLightStatus = 1;
+    lastLightChangeTime = millis();
+  }
+
+  if (offButtonPushed()) {
+    Serial.println("Off button");
+    turnOff();
+    currentLightStatus = 0;
+    lastLightChangeTime = millis();
+  }
+}
+
+bool onButtonValue() {
+  return !digitalRead(ON_BUTTON_PIN);
+}
+
+bool offButtonPushed() {
+  return !digitalRead(OFF_BUTTON_PIN);
+}
+
 /*
+void startServer() {
+  WiFi.begin(SECRET_SSID, SECRET_PSWD);
+
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  Serial.print("Connected, IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Mac address: ");
+  Serial.println(WiFi.macAddress());
+  server.begin();
+}
+
 void checkWebServer() {
   // Check if a client has connected
   WiFiClient client = server.accept();
@@ -246,15 +248,3 @@ void checkWebServer() {
   client.print(resp);
 }
 */
-
-void turnCandlesOn() {
-  Serial.println("Turning on");
-  lastLightStatus = 1;
-  IrSender.sendNEC(IR_ADDRESS, CANDLES_ON, REPEATS);
-}
-
-void turnCandlesOff() {
-  Serial.println("Turning off");
-  lastLightStatus = 0;
-  IrSender.sendNEC(IR_ADDRESS, CANDLES_OFF, REPEATS);
-}
