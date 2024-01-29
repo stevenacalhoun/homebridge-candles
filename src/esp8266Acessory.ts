@@ -6,8 +6,8 @@ import { ESP8266Platform } from './esp8266Platform';
 export class ESP8266LightAccessory {
   private service: Service;
   private onState = false;
-  private lastSet = Date.now();
-  private lastPull = 0;
+  private lastButtonPushTime = 0;
+  private lastFetchTime = Date.now();
 
   constructor(
     private readonly platform: ESP8266Platform,
@@ -32,16 +32,35 @@ export class ESP8266LightAccessory {
     const route = '/status/' + this.accessory.UUID;
     this.platform.log.info('Setting up route: %s', route);
     this.platform.server.get(route, async (req, res) => {
-      const data = await this.getOn() as boolean;
-      this.platform.log.info('%s requesting status: %s', this.accessory.UUID, data);
-      this.lastPull = Date.now();
-      res.send(data);
+      let currentLightStatus = await this.getOn() as boolean;
+
+      const requestLightStatus = req.query.currentLightStatus === 'true';
+      const requestButtonPushTime = parseInt(req.query.lastButtonPushTime);
+
+      this.platform.log.debug('GET %s', req.originalUrl);
+
+      if (currentLightStatus !== requestLightStatus) {
+        // The lights have been more recently set via the button, update status
+        // on the homebridge side
+        if (this.lastButtonPushTime !== requestButtonPushTime) {
+          this.platform.log.info('Button used on %s updating homebridge status to %s', this.accessory.UUID, requestLightStatus ? 'on' : 'off');
+
+          currentLightStatus = requestLightStatus;
+          this.setOn(currentLightStatus);
+          this.lastButtonPushTime = requestButtonPushTime;
+        } else {
+          this.platform.log.info('Setting %s to %s', this.accessory.UUID, currentLightStatus ? 'on' : 'off');
+        }
+      }
+
+      // Send new status
+      res.send(currentLightStatus);
+      this.lastFetchTime = Date.now();
     });
   }
 
   async setOn(value: CharacteristicValue) {
     this.onState = value as boolean;
-    this.lastSet = Date.now();
   }
 
   async getOn(): Promise<CharacteristicValue> {
