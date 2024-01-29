@@ -22,7 +22,7 @@ unsigned long heartbeatLast = 0;
 String accessoryId;
 int currentLightStatus = -1;
 unsigned long lastLightFetchTime = 0;
-unsigned long lastLightChangeTime = 0;
+unsigned long lastButtonPushTime = 0;
 
 // Button control pins
 #define ON_BUTTON_PIN 14
@@ -32,30 +32,32 @@ unsigned long lastLightChangeTime = 0;
 #define LED_ON LOW
 #define LED_OFF HIGH
 
-// Wifi setup (pull)
+// Wifi setup
 WiFiClient client;
 ESP8266WiFiMulti WiFiMulti;
 
-// WiFi setup (push)
-//WiFiServer server(80);
+// #define DEBUG
 
 void setup() {
   // Setup serial connection
-  Serial.begin(74880);
+  #ifdef DEBUG
+    Serial.begin(74880);
+  #endif
   Serial.println("init");
 
   // Configure heart beat and on/off pins
-  pinMode(LED_BUILTIN, OUTPUT);
+  #ifdef DEBUG
+    pinMode(LED_BUILTIN, OUTPUT);
+  #endif
   pinMode(ON_BUTTON_PIN, INPUT_PULLUP);
   pinMode(OFF_BUTTON_PIN, INPUT_PULLUP);
 
-  // Start wifi and IR
+  // Start wifi
   WiFi.hostname("ESP-host");
   WiFi.mode(WIFI_STA);
   WiFiMulti.addAP(SECRET_SSID, SECRET_PSWD);
-  //client.setInsecure();
-  // startServer();
 
+  // Start IR
   IrSender.begin(IR_TX_PIN);
 }
 
@@ -67,14 +69,14 @@ String fetchAccessoryId() {
 }
 
 void loop() {
-  heartbeat();
+  #ifdef DEBUG
+    heartbeat();
+  #endif
+
   checkButtons();
 
   // Pull strategy
-  fetchStatus();  
-
-  // Push strategy
-  /* checkWebServer(); */
+  pullStatus();  
 }
 
 void heartbeat() {
@@ -87,7 +89,7 @@ void heartbeat() {
   }
 }
 
-void fetchStatus() {
+void pullStatus() {
   // Only fetch if it is time to do so
   unsigned long currentTime = millis();
   signed long timeDiff = currentTime - lastLightFetchTime;
@@ -105,8 +107,8 @@ void fetchStatus() {
   url += accessoryId;
   url += "?currentLightStatus=";
   url += currentLightStatus ? "true" : "false";
-  url += "&lastLightChangeTime=";
-  url += lastLightChangeTime;
+  url += "&lastButtonPushTime=";
+  url += lastButtonPushTime;
   url += "";
   String data = fetchUrl(url);
 
@@ -117,15 +119,15 @@ void fetchStatus() {
   if (newStatus != currentLightStatus) {
     currentLightStatus = newStatus;
     currentLightStatus ? turnOn() : turnOff();
-    lastLightChangeTime = currentTime;
   }
-  Serial.println();
 
   lastLightFetchTime = currentTime;
 }
 
 String fetchUrl(String url) {
-  Serial.println("GET " + url);
+  #ifdef DEBUG
+    Serial.println("GET " + url);
+  #endif
   String data = "";
 
   if ((WiFiMulti.run() == WL_CONNECTED)) {
@@ -135,8 +137,10 @@ String fetchUrl(String url) {
       int httpCode = http.GET();
       if (httpCode > 0) {
         data = http.getString();
-        Serial.print("Response: ");
-        Serial.println(data);
+        #ifdef DEBUG
+          Serial.print("Response: ");
+          Serial.println(data);
+        #endif
       } 
       else {
         Serial.println("Response code: " + String(httpCode));
@@ -170,14 +174,14 @@ void checkButtons() {
     Serial.println("On button");
     turnOn();
     currentLightStatus = 1;
-    lastLightChangeTime = millis();
+    lastButtonPushTime = millis();
   }
 
   if (offButtonPushed()) {
     Serial.println("Off button");
     turnOff();
     currentLightStatus = 0;
-    lastLightChangeTime = millis();
+    lastButtonPushTime = millis();
   }
 }
 
@@ -189,7 +193,7 @@ bool offButtonPushed() {
   return !digitalRead(OFF_BUTTON_PIN);
 }
 
-/*
+/* Push functions
 void startServer() {
   WiFi.begin(SECRET_SSID, SECRET_PSWD);
 
